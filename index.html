@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>シームレスループプレイヤー</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            max-width: 500px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        .container {
+            background-color: #f4f4f9;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        input[type="file"] {
+            margin-bottom: 20px;
+            width: 100%;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 5px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            transition: background-color 0.2s;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        .slider-container {
+            margin: 20px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+        }
+        input[type="range"] {
+            width: 60%;
+            cursor: pointer;
+        }
+        .time-display {
+            font-family: monospace;
+            font-size: 14px;
+            color: #333;
+            min-width: 90px;
+        }
+        #status {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <p>MP3やM4Aなどの音声ファイルを選択してください。</p>
+        
+        <input type="file" id="audioFile" accept="audio/*, .mp3, .m4a">
+        
+        <div class="slider-container">
+            <span id="currentTimeDisplay" class="time-display">0:00</span>
+            <input type="range" id="seekSlider" value="0" step="0.01" disabled>
+            <span id="durationDisplay" class="time-display">0:00</span>
+        </div>
+
+        <br>
+        <button id="playBtn" disabled>再生</button>
+        <button id="pauseBtn" disabled>一時停止</button>
+        <button id="stopBtn" disabled>停止(リセット)</button>
+        
+        <div id="status">ファイルを選択してください</div>
+    </div>
+
+    <script>
+        let audioContext;
+        let audioBuffer;
+        let sourceNode;
+        
+        // 時間管理用変数
+        let startTime = 0;
+        let pauseTime = 0; // 現在の再生位置
+        let isPlaying = false;
+        let animationId;
+
+        const fileInput = document.getElementById('audioFile');
+        const playBtn = document.getElementById('playBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const seekSlider = document.getElementById('seekSlider');
+        const currentTimeDisplay = document.getElementById('currentTimeDisplay');
+        const durationDisplay = document.getElementById('durationDisplay');
+        const statusText = document.getElementById('status');
+
+        // 時間を MM:SS 形式にフォーマット
+        function formatTime(seconds) {
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        // ファイル読み込み
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            statusText.textContent = "読み込み中...（少しお待ちください）";
+            playBtn.disabled = true;
+            pauseBtn.disabled = true;
+            stopBtn.disabled = true;
+            seekSlider.disabled = true;
+            stopAudio(true); // 既存の音声を完全リセット
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                initAudio(e.target.result);
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        // デコード処理
+        async function initAudio(arrayBuffer) {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            try {
+                audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // UI初期化
+                seekSlider.max = audioBuffer.duration;
+                seekSlider.value = 0;
+                durationDisplay.textContent = formatTime(audioBuffer.duration);
+                currentTimeDisplay.textContent = "0:00";
+                
+                statusText.textContent = "準備完了！再生できます。";
+                playBtn.disabled = false;
+                seekSlider.disabled = false;
+            } catch (err) {
+                console.error(err);
+                statusText.textContent = "音声の読み込みに失敗しました。";
+            }
+        }
+
+        // UIを毎フレーム更新
+        function updateUI() {
+            if (isPlaying) {
+                // ループ時の時間を計算（再生開始からの経過時間 + 再開時のオフセット を 曲の長さで割った余り）
+                const currentPos = (audioContext.currentTime - startTime) % audioBuffer.duration;
+                seekSlider.value = currentPos;
+                currentTimeDisplay.textContent = formatTime(currentPos);
+                animationId = requestAnimationFrame(updateUI);
+            }
+        }
+
+        // 再生処理
+        function playAudio(offset = pauseTime) {
+            if (!audioBuffer) return;
+            if (audioContext.state === 'suspended') audioContext.resume();
+            if (isPlaying) return;
+
+            sourceNode = audioContext.createBufferSource();
+            sourceNode.buffer = audioBuffer;
+            sourceNode.loop = true;
+            sourceNode.connect(audioContext.destination);
+
+            sourceNode.start(0, offset);
+            // 実際の経過時間を計算するための起点を設定
+            startTime = audioContext.currentTime - offset;
+            
+            isPlaying = true;
+            playBtn.disabled = true;
+            pauseBtn.disabled = false;
+            stopBtn.disabled = false;
+            statusText.textContent = "再生中...";
+            
+            updateUI();
+        }
+
+        // 一時停止・停止処理
+        function stopAudio(reset = false) {
+            if (sourceNode && isPlaying) {
+                sourceNode.stop();
+                cancelAnimationFrame(animationId);
+                pauseTime = (audioContext.currentTime - startTime) % audioBuffer.duration;
+            }
+            isPlaying = false;
+            sourceNode = null;
+
+            if (reset) {
+                pauseTime = 0;
+                seekSlider.value = 0;
+                currentTimeDisplay.textContent = "0:00";
+                statusText.textContent = "停止しました";
+                pauseBtn.disabled = true;
+                stopBtn.disabled = true;
+            } else {
+                statusText.textContent = "一時停止中";
+                pauseBtn.disabled = true;
+            }
+            playBtn.disabled = false;
+        }
+
+        // イベントリスナー
+        playBtn.addEventListener('click', () => playAudio(pauseTime));
+        pauseBtn.addEventListener('click', () => stopAudio(false));
+        stopBtn.addEventListener('click', () => stopAudio(true));
+
+        // シークバーの操作処理
+        seekSlider.addEventListener('input', (e) => {
+            const value = parseFloat(e.target.value);
+            currentTimeDisplay.textContent = formatTime(value);
+        });
+
+        seekSlider.addEventListener('change', (e) => {
+            const value = parseFloat(e.target.value);
+            pauseTime = value;
+            
+            if (isPlaying) {
+                // 再生中の場合は一度止めて新しい位置から再開
+                if (sourceNode) sourceNode.stop();
+                isPlaying = false;
+                cancelAnimationFrame(animationId);
+                playAudio(pauseTime);
+            }
+        });
+    </script>
+</body>
+</html>
